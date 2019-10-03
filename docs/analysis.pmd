@@ -1,0 +1,258 @@
+% Fitting Quality Factor for Notch Type Measurements
+% Daniel Parker
+% 30th September 2019
+
+```python
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+from matplotlib.patches import Circle
+
+from qdetective import *
+from qdetective.models import *
+from qdetective.utils import *
+
+np.random.seed(42)
+```
+
+# Resonance Model
+The resonator we are using in these experiments is a notch type resonator:
+
+```python echo = False, width = 250
+
+img=mpimg.imread('resonator.png')
+imgplot = plt.imshow(img)
+plt.xticks([])
+plt.yticks([])
+plt.show()
+```
+
+whereby the resonance is measured in transmission along a common feedline, and
+resonant microwaves capacitively couple to quarter wavelength resonators from
+the feedline.
+
+[Khalil et al](https://aip.scitation.org/doi/10.1063/1.3692073) derive the
+following expression for the complex $S_{21}$ response:
+
+$$ S_{21}(f) = 1 - \frac{(Q_l/|Q_c|)e^{i\phi}}{1 + 2iQ_l(f/f_r - 1)}$$
+
+```python f_size = (8, 3), width = 900
+fr = 7.0e9
+f = np.linspace(fr - 4e6, fr + 4e6, 1000)
+
+s21 = ideal_notch(f, fr, Qi = 1e5, Qc = 5e4, phi = 30)
+
+plot_s21(s21)
+plt.tight_layout()
+plt.show()
+```
+
+[Probst et al](https://doi.org/10.1063/1.4907935) extend this model further for
+an uncalibrated measurement setup with some attenuation `a`, global phase offset
+`alpha` and and line delay `tau`.
+
+```python f_size = (8, 3), width = 900
+s21 *= environment(f, a = 0.1, alpha = -10, tau = 10/3e8)
+
+plot_s21(s21)
+plt.tight_layout()
+plt.show()
+```
+
+Further, to more accurately model a realistic measurement we can add noise to
+the $S_{21}$ data.
+
+```python f_size = (8, 3), width = 900
+s21 += measurement_noise(f, power_dBm = 20)
+
+plot_s21(s21)
+plt.tight_layout()
+plt.show()
+```
+
+The objective of $S_{21}$ fitting is to obtain the parameters $Q_i$, $Q_c$ and
+$f_r$ from the noisy and environment screened data.
+
+# Circle Fitting
+In order to construct a circle fitter, I follow the same algorithm as is presented
+by [Probst et al](https://doi.org/10.1063/1.4907935). However, I noticed that there
+are certain cases where data has low noise levels and the smallest eigenvalue
+in the Lagrange multiplier problem fails to yield a sensible solution. I don't yet
+understand how this fixed the issues but instead of using the smallest non-negative
+eigenvalue, I now use the closest eigenvalue to zero (positive or negative). I've
+found that this produces more reliable fits but I have not gone to the effort to
+prove why this works. Negative eigenvalues close to zero don't seem to appear for
+sufficiently noisy data so it's this change will likely be unused in practice.
+
+# Removing the Line Delay
+As can be seen from the above plots, the *ideal* (or calibrated) notch
+measurement forms a circle on the complex plane. The line delay $\tau$ is what
+distorts this circle. Following Probst et al, we implement a linear circle fitting
+method from a generalised eigenvalue problem and the following cost function:
+
+```python evaluate = False
+err = np.sum(np.abs(np.abs(s21_complex - (xc + 1j*yc)) - r))
+```
+
+where `xc + 1j*yc` is the centre of the circle on the complex plane and `r` is the
+radius. The cost function moves the $S_{21}$ data to the origin and compares the
+modulus of each data point to the predicted radius.
+
+We may then divide the $S_{21}$ data by $e^{-2\pi i \tau f}$ for different gueses
+for $\tau$ such that `err` is minimised.
+
+```python f_size = (8, 3), width = 900
+opt, s21_circular = fit_line_delay(s21)
+
+tau = opt.x[0]
+print(tau * 3e8) # expect to be around 10
+
+xc, yc, r, err = circle_fit(s21_circular)
+
+axes = plot_s21(s21_circular)
+axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
+plt.tight_layout()
+plt.show()
+```
+
+# Global Phase and Line Loss/Gain
+Turning our attention back to the ideal notch resonator model, if we consider the
+limit as $f \to \infty$, we expect the resonance circle to intersect the point
+$1 + 0i$. Global phase and line loss move this point to $a\cdot e^{i\alpha}$. Thus,
+if we estimate the point on the complex plane corresponding to $f \to \infty$ we
+can divide by this point to remove global phase and line loss. I estimate this point
+by taking the last circle fit applied to the line delay calibrated resonance and
+projecting a point that is halfway along the arc separating the endpoints
+`s21[f[0]]` and `s21[f[-1]]` as shown by the red cross below.
+
+The wider the frequency sweep (the closer the endpoints are together), the less
+scope there is for error in the estimation of this point. This is only really an
+issue for resonances that aren't perfectly circular.
+
+** We therefore reccomend acquiring a trace such that the span is greater than
+$5\times$ the full width half max of the resonance as a basic rule of thumb.**
+
+```python f_size = (8, 3), width = 900
+for bw in [1e6, 3e6, 5e6, 7e6, 9e6]:
+    f = np.linspace(fr - bw, fr + bw, 1000)
+    s21_tmp = ideal_notch(f, fr, Qi = 10e4, Qc = 10e3, phi = -30)
+
+    axes = plot_s21(s21_tmp)
+
+    xc, yc, r, err = circle_fit(s21_tmp)
+    axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
+
+    z = xc + 1j*yc
+    theta = (np.angle(s21_tmp.iloc[-1] - z) - np.angle(s21_tmp.iloc[0] - z))/2
+    f_inf = z + (s21_tmp.iloc[0] - z)*np.exp(1j*theta)
+    axes[2].scatter(np.real(f_inf), np.imag(f_inf), marker = 'x', color = 'r')
+
+    plt.tight_layout()
+    plt.show()
+
+    print('Bandwidth / Full Width Half Max = %.2f' % ((np.ptp(f))/fwhm(s21_tmp)))
+```
+
+We can now *normalise* our resonance by dividing by this point `f_inf`:
+```python f_size = (8, 3), width = 900
+z, s21_norm = normalise(s21_circular)
+
+plot_s21(s21_norm)
+plt.tight_layout()
+plt.show()
+```
+
+# Fitting the Resonance Parameters
+Now we can attempt to fit the resonance parameters. We begin by computing the
+tilt angle about $1 + 0i$: $\phi$. Simultaneously we symmeterise the resonance
+by rotating the resonance circle by $-\phi$ about $1 + 0i$ to obtain the resonance
+frequency $f_r$.
+
+```python f_size = (8, 3), width = 900
+phi, s21_sym = symmeterise(s21_norm)
+
+print("phi = %.2f" % phi) # should be around -30 degrees
+
+fr_fit = s21_sym.idxmin()
+print("fr = %.2f" % fr_fit) # should be around 7GHz
+
+plot_s21(s21_sym)
+plt.tight_layout()
+plt.show()
+```
+
+Next, the diameter of the resonance circle corresponds to $Q_l/|Q_c|$.
+Approximating $Q_l$ using the full width half maximum of the resonance we arrive at
+a reasonable fit:
+
+```python f_size = (8, 3), width = 900
+Ql_rough = np.abs(s21_sym).idxmin()/fwhm(s21_sym)
+_, _, r, _ = circle_fit(s21_sym)
+fit = pd.Series(1 - 2*r/(1 + 2j*Ql_rough*(s21_sym.index.values/fr_fit - 1)),
+                index = s21_sym.index)
+
+plot_s21(fit, axes = plot_s21(s21_sym))
+plt.tight_layout()
+plt.show()
+```
+
+Thus there is only one missing parameter $Q_l$ to fit. We do this by *polishing*
+our initial guess `Ql_rough` with a non-linear optimiser, such as `shgo`.
+
+```python f_size = (8, 3), width = 900
+opt, s21_final = polish_Ql(s21_sym)
+
+plot_s21(s21_final, axes = plot_s21(s21_sym))
+plt.tight_layout()
+plt.show()
+```
+
+```python
+Ql = opt.x
+Qc = opt.x/(2*r) * np.exp(1j*np.deg2rad(phi))
+Qi = 1/(1/Ql - 1/np.real(Qc))
+
+print('Ql = %.2f' % Ql)
+print('|Qc| = %.2f' % np.abs(Qc)) # should be around 5e4
+print('Qi = %.2f' % Qi) # should be around 1e5
+```
+
+Combining it all together, let's see how well it fits our original input data:
+```python f_size = (8, 3), width = 900
+f = s21.index.values
+fit = z * np.exp(-2*np.pi*1j*tau*f) * (1 - Ql/Qc / (1 + 2j*Ql*(f/fr_fit - 1)))
+
+s21_fit = pd.Series(fit, index = f)
+
+plot_s21(s21_fit, axes = plot_s21(s21))
+plt.tight_layout()
+plt.show()
+```
+
+All these operations are condensed into a single function:
+```python f_size = (8, 3), width = 900
+params, s21_fit = fit_notch(s21)
+
+plot_s21(s21_fit, axes = plot_s21(s21))
+plt.tight_layout()
+plt.show()
+
+print(params)
+```
+
+# A Real Resonance Measurement
+```python f_size = (8, 3), width = 900
+df = pd.read_csv('/home/dp/monolayer/data/dose_test/res1.csv',
+                 skiprows = 6,
+                 index_col = 0,
+                 skipfooter = 2,
+                 engine = 'python')
+
+s21 = 10**(df['S21(DB).1']/10)*np.exp(1j * np.deg2rad(df['S21(DEG).1']))
+params, s21_fit = fit_notch(s21, debug = True)
+
+plot_s21(s21_fit, axes = plot_s21(s21))
+plt.tight_layout()
+plt.show()
+
+print(params)
+```

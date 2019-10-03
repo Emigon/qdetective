@@ -1,0 +1,304 @@
+% Modelling Notch Fit Uncertainty
+% Daniel Parker
+% 1st October 2019
+
+```python
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+```
+
+# Simplifications
+For this analysis we will disregard environmental effects and focus our attention
+to fitting the quality factor parameters for the symmeterised ($\phi = 0$) notch
+type resonator of the form:
+
+$$ S_{21}(f) = 1 - \frac{Q_l/Q_c}{1 + 2iQ_l(f/f_r - 1)}$$
+
+where:
+
+$$ 1/Q_l = 1/Q_i + 1/Q_c$$
+
+We assume that we are able to fit $Q_l$ well. Not only is $Q_l$ well approximated
+by the full width half maximum of the resonance, but it is of smaller magnitude
+than $Q_i$ and $Q_c$ by definition, and will consequently have smaller standard
+deviation with respect to these other quality factors.
+
+To simplify things further, we confine our analysis of quality factor estimate
+noise to the noise in the estimated resonance circle diameter. The standard
+deviation of the circle diameter is easy to establish if one considers each
+the modulus of each point from the centre of the resonance circle as an
+estimate for the radius. Then the standard deviation is given by the standard
+deviation of the magnitude responce of the symmeterised and normalised resonance
+circle translated to the origin.
+
+We begin my modelling the diameter noise $X$ as a normally distributed random
+variable with $\mu_x = x$ and $\sigma = \sigma_x$.
+
+# Approximating the Error in $Q_c$
+Reframing the variation of diameter as a pertubation $\delta_x$, we may derrive
+the approximate standard deviation of $Q_c$:
+
+$$ x + \delta x = \frac{Q_l}{Q_c + \delta Q_c} $$
+$$ \Rightarrow Q_c + \delta Q_c = \frac{Q_l}{x + \delta x} $$
+$$ \Rightarrow \frac{\delta Q_c}{\delta x} = \frac{-Q_l}{(x + \delta x)^2}
+    \approx -\frac{Q_l}{x^2}$$
+
+for small pertubations about 0. If the pertubation $\delta_x$ is small compared
+to $x$, we may approximate the distribution of $Q_c$ as normal with standard
+deviation:
+
+$$ \sigma_{Q_c} = \bigg|\frac{\delta Q_c}{\delta x}\bigg|\sigma_x = \frac{Q_l\sigma_x}{x^2}$$
+
+Let us codify this approximation to see if it holds:
+
+```python
+def sample_q_factors(Ql, mu_x, sigma_x, size = 100000):
+    """ Generate random samples for Qc and Qi for gaussian diameter mu_x
+
+    Args:
+        Ql:         Loaded quality factor (assumed to be constant
+        mu_x:       The mean diameter of the resonance circle
+        sigma_x:    The standard deviation of the diameter
+        size:       The number of samples to draw
+
+    Returns:
+        df:     DataFrame with Qc and Qi as columns
+    """
+
+    df = pd.DataFrame(columns = ['Qc', 'Qi'])
+    df.Qc = Ql/(np.random.normal(loc = mu_x, scale = sigma_x, size = size))
+    df.Qi = 1/(1/Ql - 1/df.Qc)
+    return df
+
+def normed_normal(xmin, xmax, mu, sigma):
+    x = np.linspace(xmin, xmax, 100)
+    pdf = np.exp(-.5 * (x - mu)**2 / sigma**2)
+    return pd.Series(pdf / pdf.ptp(), index = x)
+
+def sigma_Qc(x, Ql, sigma_x):
+    return Ql * sigma_x / x**2
+
+def mu_Qc(x, Ql):
+    return Ql/x
+
+Ql = 1e3
+x = 0.6
+sigma_x = 0.01 * x /3 # 1% of x
+
+samps = sample_q_factors(Ql, x, sigma_x)
+n, b, _ = plt.hist(samps.Qc, density = True, bins = 100)
+
+pdf = normed_normal(b[0], b[-1], mu_Qc(x, Ql), sigma_Qc(x, Ql, sigma_x))
+plt.plot(n.ptp() * pdf)
+plt.show()
+```
+
+Hence, the gaussian assumption holds and the standard deviation estimate
+$\sigma_{Q_c}$ matches the standard deviations of the true distribution.
+
+We will examine where this approximation breaks down further on.
+
+# Approximating the Error in $Q_i$
+Applying the same taylor approximation trick to the calculation of $Q_i$,
+we have:
+
+$$ Q_i + \delta Q_i = \frac{1}{1/Q_l - 1/(Q_c + \delta Q_c)} $$
+$$ \Rightarrow \frac{\delta Q_i}{\delta Q_c} \approx - \frac{Q_i^2}{Q_c^2} $$
+$$ \Rightarrow \sigma_{Q_i} \approx \frac{Q_i^2}{Q_c^2} \sigma_{Q_c}$$
+
+```python
+def mu_Qi(x, Ql):
+    return 1/(1/Ql - 1/mu_Qc(x, Ql))
+
+def sigma_Qi(x, Ql, sigma_x):
+    return mu_Qi(x, Ql)**2 / mu_Qc(x, Ql)**2 * sigma_Qc(x, Ql, sigma_x)
+
+n, b, _ = plt.hist(samps.Qi, density = True, bins = 100)
+
+pdf = normed_normal(b[0], b[-1], mu_Qi(x, Ql), sigma_Qi(x, Ql, sigma_x))
+plt.plot(n.ptp() * pdf)
+plt.show()
+```
+
+Again, for this particular example, our normality approximation holds.
+
+# Error as a Function of Coupling Ratio
+
+Now we may vary the ratio of $Q_i$ and $Q_c$ and observe how $\sigma_{Q_c}$ and
+$\sigma_{Q_i}$ change. This is equivalent to varying the diameter for a fixed $Q_l$.
+
+Let $r = Q_i /Q_c$. We can derive expressions for $x$ in terms of $r$ and vice
+versa:
+
+$$ 1/Q_l = 1/Q_i + 1/Q_c \Rightarrow Q_c/Q_l = Q_c/Q_i + 1$$
+$$ r = = \frac{1}{1/x - 1}$$
+$$ x = \frac{1}{1/r + 1}$$
+
+This enables us to plot the standard deviations as a function of the ratio $r$:
+
+```python
+ratios = np.logspace(-2, 2, 25)
+
+fig, ax = plt.subplots()
+
+x = 1/(1/ratios + 1)
+ax.plot(ratios, sigma_Qi(x, Ql, sigma_x), '--', label = '$Q_i$', color = 'r')
+ax.plot(ratios, sigma_Qc(x, Ql, sigma_x), label = '$Q_c$', color = 'r')
+
+for r in ratios:
+    x = 1/(1/r + 1)
+    samps = sample_q_factors(Ql, x, sigma_x)
+    ax.scatter(r, samps.Qi.std(), marker = 's', color = 'r')
+    ax.scatter(r, samps.Qc.std(), marker = 'D', color = 'r')
+
+ax.set_ylabel('Standard Deviation')
+ax.tick_params(axis = 'y')
+ax.set_yscale('log')
+ax.set_xlabel('$Q_i/Q_c$')
+ax.set_xscale('log')
+ax.legend(loc = 'center right')
+
+plt.show()
+```
+
+The squares and diamonds on the plot indicate the standard deviation of a
+transformed set of $10^5$ samples of diamter from the initial normal distribution.
+Compared to the derived analytical expressions for the standard deviation, the fit
+is good out for up to two orders of magnitude difference between $Q_i$ and $Q_c$.
+
+From the above plot we can see that the standard deviations associated with a
+quality factor $Q$ increase with increases to the quality factor. However, if
+we approximate the relative error as $3\sigma/\mu$, we find a disproportionate
+increase in error:
+
+```python
+fig, ax = plt.subplots()
+
+x = 1/(1/ratios + 1)
+relerr_Qi = 3*sigma_Qi(x, Ql, sigma_x)/mu_Qi(x, Ql)
+relerr_Qc = 3*sigma_Qc(x, Ql, sigma_x)/mu_Qc(x, Ql)
+
+ax.plot(ratios, relerr_Qi, '--', label = '$Q_i$', color = 'r')
+ax.plot(ratios, relerr_Qc, label = '$Q_c$', color = 'r')
+ax.plot(ratios, relerr_Qi + relerr_Qc, label = '$Q_c + Q_i$', color = 'g')
+
+ax.set_ylabel('Approx. Relative Error')
+ax.tick_params(axis = 'y')
+ax.set_yscale('log')
+ax.set_xlabel('$Q_i/Q_c$')
+ax.set_xscale('log')
+ax.legend(loc = 'center right')
+
+plt.show()
+```
+
+If we define the joint relative error as the sum of these relative errors (the
+green trace above) we find that the joint error for $Q_c$ and $Q_i$ is
+minimised when operating in the critically coupled regime:
+
+The relative error in $Q_i$ increases as the degree of undercoupling increases, and
+the relative error in the estimate $Q_c$ increases as the degree of overcoupling
+increases. This has an important impact for design:
+
+**In experiments that require the accurate estimation of $Q_i$, design the system
+to be undercoupled.**
+
+**In experiments that require the accurate estimation of $Q_c$, design the system
+to be overcoupled.**
+
+**In experiments that require the accurate estimation of both $Q_i$ and $Q_c$,
+design the system to be critically coupled.**
+
+# Error Behaviour with $Q_l$ and $\sigma_x$
+We now turn our attention to the approximate relative error for different loaded
+quality factors and different ratios. Curiously, there is no dependance between
+the relative errors for $Q_c$ and $Q_i$:
+
+$$\sigma_{Q_c}/\mu_{Q_c} = \frac{Q_l \sigma_x}{x^2 Q_l/x} = \sigma_x/x$$
+
+$$\sigma_{Q_i}/\mu_{Q_i} = \frac{Q_i^2}{Q_c} \cdot \frac{\sigma_{Q_c}}{Q_c} =
+    \frac{Q_i^2\sigma_x}{Q_c\cdot x}:$$
+
+Neither of these expressions for the relative error depend on $Q_l$. Therefore,
+we may conclude that in order to improve estimate quality for a given situation,
+focus should be given to minimising $\sigma_x$.
+
+If we now plot relative error as a function of the relative error in $x$ we
+observe a log linear trend:
+
+```python
+fig, (ax1, ax2) = plt.subplots(ncols = 2, sharey = True, sharex = True)
+
+relerr_x = np.logspace(-6, -1, 100)
+ratios = np.logspace(-2, 2, 5)
+
+for r, x in zip(ratios, 1/(1/ratios + 1)):
+    sigma_x = x * relerr_x / 3
+
+    relerr_Qi = 3*sigma_Qi(x, Ql, sigma_x)/mu_Qi(x, Ql)
+    relerr_Qc = 3*sigma_Qc(x, Ql, sigma_x)/mu_Qc(x, Ql)
+
+    ax1.plot(relerr_x, relerr_Qi, label = '$r = %.2f$' % r)
+    ax2.plot(relerr_x, relerr_Qc, label = '$r = %.2f$' % r)
+
+ax1.set_ylabel('Approx. Relative Error')
+ax1.set_title('$Q_i$')
+ax2.set_title('$Q_c$')
+
+for ax in [ax1, ax2]:
+    ax.set_yscale('log')
+    ax.set_xlabel('$3\sigma_x/x$')
+    ax.set_xscale('log')
+
+ax2.legend(loc = 'lower right')
+
+plt.tight_layout()
+plt.show()
+```
+
+As circle noise decreases we are able to decrease the quality factor estimate
+noise for both $Q_i$ and $Q_c$. Noise on $Q_c$ however does not depend on the
+coupling ratio $r$, whilst smaller coupling ratios for $Q_i$ yield better estimates
+for $Q_i$.
+
+# The Breakdown of Normal Approximations
+If we consider the plot of standard deviation vs coupling ratio we observed
+before, but with some modifications, we find that the gaussian models for
+quality factor varition begin to underestimate the true standard deviation.
+Below, I have increased the error on $x$ to $\pm 10 \%$ and extended the range
+of ratios out to 3 orders of magnitude on either side of critical coupling:
+
+```python
+Ql = 1e3
+x = 0.6
+sigma_x = 0.1 * x /3 # 10% of x
+
+ratios = np.logspace(-3, 3, 25)
+
+fig, ax = plt.subplots()
+
+x = 1/(1/ratios + 1)
+ax.plot(ratios, sigma_Qi(x, Ql, sigma_x), '--', label = '$Q_i$', color = 'r')
+ax.plot(ratios, sigma_Qc(x, Ql, sigma_x), label = '$Q_c$', color = 'r')
+
+for r in ratios:
+    x = 1/(1/r + 1)
+    samps = sample_q_factors(Ql, x, sigma_x)
+    ax.scatter(r, samps.Qi.std(), marker = 's', color = 'r')
+    ax.scatter(r, samps.Qc.std(), marker = 'D', color = 'r')
+
+ax.set_ylabel('Standard Deviation')
+ax.tick_params(axis = 'y')
+ax.set_yscale('log')
+ax.set_xlabel('$Q_i/Q_c$')
+ax.set_xscale('log')
+ax.legend(loc = 'center right')
+
+plt.show()
+```
+
+I would therefore reccomend *not to trust the standard deviation estimates for
+large errors on $x$ (> $10 \%$) and/or coupling factor ratios that exceed $2$
+orders of magnitude.*. In the above example, the gaussian models only hold for
+1 order of magnitude for and error on $x$ of $10\%$.
