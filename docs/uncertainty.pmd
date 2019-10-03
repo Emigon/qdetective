@@ -197,15 +197,15 @@ If we define the joint relative error as the sum of these relative errors (the
 green trace above) we find that the joint error for $Q_c$ and $Q_i$ is
 minimised when operating in the critically coupled regime:
 
-The relative error in $Q_i$ increases as the degree of undercoupling increases, and
-the relative error in the estimate $Q_c$ increases as the degree of overcoupling
+The relative error in $Q_i$ increases as the degree of overcoupling increases, and
+the relative error in the estimate $Q_c$ increases as the degree of undercoupling
 increases. This has an important impact for design:
 
 **In experiments that require the accurate estimation of $Q_i$, design the system
-to be undercoupled.**
+to be overcoupled.**
 
 **In experiments that require the accurate estimation of $Q_c$, design the system
-to be overcoupled.**
+to be undercoupled.**
 
 **In experiments that require the accurate estimation of both $Q_i$ and $Q_c$,
 design the system to be critically coupled.**
