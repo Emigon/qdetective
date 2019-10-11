@@ -75,11 +75,6 @@ def fwhm(s21):
     flipped = mod.max() - mod
     return np.ptp(mod[flipped > .5*flipped.max()].index)
 
-def symmeterise(s21):
-    x0, y0, r, _ = circle_fit(s21)
-    phi = np.sin(y0/r)
-    return np.rad2deg(phi), 1 - r + np.exp(1j*phi)*(s21 - (x0 + 1j*y0))
-
 def fit_line_delay(s21, max_line_length = 25):
     def costf(tau):
         return circle_fit(np.exp(1j*tau*2*np.pi*s21.index.values)*s21)[-1]
