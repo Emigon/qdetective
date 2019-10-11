@@ -101,15 +101,13 @@ We may then divide the $S_{21}$ data by $e^{-2\pi i \tau f}$ for different guese
 for $\tau$ such that `err` is minimised.
 
 ```python f_size = (8, 3), width = 900
-opt, s21_circular = fit_line_delay(s21)
+opt, s21_circular, circle = fit_line_delay(s21)
 
-tau = opt.x[0]
+tau = opt.x
 print(tau * 3e8) # expect to be around 10
 
-xc, yc, r, err = circle_fit(s21_circular)
-
 axes = plot_s21(s21_circular)
-axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
+circle.add_to(axes[2])
 plt.tight_layout()
 plt.show()
 ```
@@ -131,66 +129,36 @@ issue for resonances that aren't perfectly circular.
 ** We therefore reccomend acquiring a trace such that the span is greater than
 $5\times$ the full width half max of the resonance as a basic rule of thumb.**
 
+We *normalise* our resonance by dividing by this point:
 ```python f_size = (8, 3), width = 900
-for bw in [1e6, 3e6, 5e6, 7e6, 9e6]:
-    f = np.linspace(fr - bw, fr + bw, 1000)
-    s21_tmp = ideal_notch(f, fr, Qi = 10e4, Qc = 10e3, phi = -30)
+z, s21_norm, circle = normalise(s21_circular, circle)
 
-    axes = plot_s21(s21_tmp)
-
-    xc, yc, r, err = circle_fit(s21_tmp)
-    axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
-
-    z = xc + 1j*yc
-    theta = (np.angle(s21_tmp.iloc[-1] - z) - np.angle(s21_tmp.iloc[0] - z))/2
-    f_inf = z + (s21_tmp.iloc[0] - z)*np.exp(1j*theta)
-    axes[2].scatter(np.real(f_inf), np.imag(f_inf), marker = 'x', color = 'r')
-
-    plt.tight_layout()
-    plt.show()
-
-    print('Bandwidth / Full Width Half Max = %.2f' % ((np.ptp(f))/fwhm(s21_tmp)))
-```
-
-We can now *normalise* our resonance by dividing by this point `f_inf`:
-```python f_size = (8, 3), width = 900
-z, s21_norm = normalise(s21_circular)
-
-plot_s21(s21_norm)
+axes = plot_s21(s21_norm)
+circle.add_to(axes[2])
 plt.tight_layout()
 plt.show()
 ```
 
 # Fitting the Resonance Parameters
-Now we can attempt to fit the resonance parameters. We begin by computing the
-tilt angle about $1 + 0i$: $\phi$. Simultaneously we symmeterise the resonance
-by rotating the resonance circle by $-\phi$ about $1 + 0i$ to obtain the resonance
-frequency $f_r$.
+The resonance frequency is chosen to be the frequency corresponding to the
+closest point diametrically opposite $1 + 0j$.
 
-```python f_size = (8, 3), width = 900
-phi, s21_sym = symmeterise(s21_norm)
-
-print("phi = %.2f" % phi) # should be around -30 degrees
-
-fr_fit = s21_sym.idxmin()
-print("fr = %.2f" % fr_fit) # should be around 7GHz
-
-plot_s21(s21_sym)
-plt.tight_layout()
-plt.show()
-```
-
-Next, the diameter of the resonance circle corresponds to $Q_l/|Q_c|$.
+The diameter of the resonance circle corresponds to $Q_l/|Q_c|$.
 Approximating $Q_l$ using the full width half maximum of the resonance we arrive at
 a reasonable fit:
 
 ```python f_size = (8, 3), width = 900
-Ql_rough = np.abs(s21_sym).idxmin()/fwhm(s21_sym)
-_, _, r, _ = circle_fit(s21_sym)
-fit = pd.Series(1 - 2*r/(1 + 2j*Ql_rough*(s21_sym.index.values/fr_fit - 1)),
-                index = s21_sym.index)
+Ql_rough = np.abs(s21_norm).idxmin()/fwhm(s21_norm)
+circle, _ = circle_fit(s21_norm)
+sfr = -(1 + 0j - circle.z) + circle.z
+phi = -np.angle(1 - circle.z)
+fr_fit = np.abs(s21_norm - sfr).idxmin()
 
-plot_s21(fit, axes = plot_s21(s21_sym))
+s21_fit = 1 - 2*circle.r*np.exp(-1j*phi) /\
+            (1 + 2j*Ql_rough*(s21_norm.index.values/fr_fit - 1))
+fit = pd.Series(s21_fit, index = s21_norm.index)
+
+plot_s21(fit, axes = plot_s21(s21_norm))
 plt.tight_layout()
 plt.show()
 ```
@@ -199,16 +167,17 @@ Thus there is only one missing parameter $Q_l$ to fit. We do this by *polishing*
 our initial guess `Ql_rough` with a non-linear optimiser, such as `shgo`.
 
 ```python f_size = (8, 3), width = 900
-opt, s21_final = polish_Ql(s21_sym)
+opt, _, _, s21_final, _ = polish_Ql(s21_norm, circle)
 
-plot_s21(s21_final, axes = plot_s21(s21_sym))
+axes = plot_s21(s21_final, axes = plot_s21(s21_norm))
+circle.add_to(axes[2])
 plt.tight_layout()
 plt.show()
 ```
 
 ```python
 Ql = opt.x
-Qc = opt.x/(2*r) * np.exp(1j*np.deg2rad(phi))
+Qc = opt.x/(2*circle.r) * np.exp(1j*phi)
 Qi = 1/(1/Ql - 1/np.real(Qc))
 
 print('Ql = %.2f' % Ql)
@@ -241,14 +210,8 @@ print(params)
 
 # A Real Resonance Measurement
 ```python f_size = (8, 3), width = 900
-df = pd.read_csv('/home/dp/monolayer/data/dose_test/res1.csv',
-                 skiprows = 6,
-                 index_col = 0,
-                 skipfooter = 2,
-                 engine = 'python')
-
-s21 = 10**(df['S21(DB).1']/10)*np.exp(1j * np.deg2rad(df['S21(DEG).1']))
-params, s21_fit = fit_notch(s21, debug = True)
+s21 = pd.read_pickle('res1.pkl')
+params, s21_fit = fit_notch(s21)
 
 plot_s21(s21_fit, axes = plot_s21(s21))
 plt.tight_layout()

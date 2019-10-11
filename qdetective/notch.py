@@ -4,94 +4,101 @@ import numpy as np
 import pandas as pd
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
 
-from scipy.optimize import shgo
+from scipy.optimize import minimize_scalar
 
 from qdetective import *
 from qdetective.utils import *
 
-def fit_notch(s21, debug = False):
+def fit_notch(s21, N = 500, debug = False):
     params = pd.Series(index = ['phi', 'fr', 'Qi', '|Qc|', 'Ql', 'a', 'alpha', 'tau'],\
                        dtype = np.float64)
 
+    # sample the resonance over N points to reduce fitting power off resonance
+    np.random.seed(42)
+    sampled = draw_samples(s21, N = N)
+    f = sampled.index.values
+
     # remove line delay
-    opt, s21_circular = fit_line_delay(s21)
+    opt, s21_circular, circle_A = fit_line_delay(sampled)
     params['tau'] = opt.x[0]
 
-    if debug:
-        xc, yc, r, _ = circle_fit(s21_circular)
-        axes = plot_s21(s21_circular)
-        axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
-        plt.tight_layout()
-        plt.show()
-
     # normalise the resonance about 1 + 0j
-    z, s21_norm = normalise(s21_circular)
+    z, s21_norm, circle_B = normalise(s21_circular, circle_A)
     params['a'], params['alpha'] = np.abs(z), np.rad2deg(np.angle(z))
 
-    if debug:
-        xc, yc, r, _ = circle_fit(s21_norm)
-        axes = plot_s21(s21_norm)
-        axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
-        plt.tight_layout()
-        plt.show()
+    # estimate the tilt angle
+    phi = -np.angle(1 - circle_B.z)
+    params['phi'] = np.rad2deg(phi)
 
-    # compute the circle tilt and resonance freqency
-    params['phi'], s21_sym = symmeterise(s21_norm)
-    phi = np.deg2rad(params['phi'])
-    params['fr'] = s21_sym.idxmin()
+    # estimate the resonance frequency to be diametrically opposite 1 + 0j
+    sfr = -(1 + 0j - circle_B.z) + circle_B.z
+    params['fr'] = np.abs(s21_norm - sfr).idxmin()
 
-    if debug:
-        xc, yc, r, _ = circle_fit(s21_sym)
-        axes = plot_s21(s21_sym)
-        axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
+    # polish Ql with shgo
+    def costf(q):
+        fit = 1 - 2*circle_B.r*np.exp(-1j*phi) / (1 + 2j*q*(f/params['fr'] - 1))
+        return np.sum(np.abs(fit - s21_norm))
 
-    # fit qualitiy factors
-    opt, s21_final = polish_Ql(s21_sym)
-    xc, yc, r, _ = circle_fit(s21_sym)
+    Qrough = params['fr']/fwhm(s21)
+    opt = shgo(costf, bounds = [(.8*Qrough, 1e3*Qrough)], iters = 5)
+
+    # calculate individual Q factors
     params['Ql'] = opt.x
-    params['|Qc|'] = params['Ql']/(2*r)
+    params['|Qc|'] = params['Ql']/(2*circle_B.r)
     params['Qi'] = 1/(1/params['Ql'] - 1/(params['|Qc|']*np.cos(phi)))
 
-    params['sigma_x'] = 2*np.std(np.abs(s21_sym - xc - 1j*yc))
-    params['sigma_Qi'] = _sigma_Qi(2*r, params['Ql'], params['sigma_x'])
-    params['sigma_Qc'] = _sigma_Qc(2*r, params['Ql'], params['sigma_x'])
+    params['sigma_x'] = 2*np.std(np.abs(s21_norm - circle_B.z))
+    params['sigma_Qi'] = _sigma_Qi(2*circle_B.r, params['Ql'], params['sigma_x'])
+    params['sigma_Qc'] = _sigma_Qc(2*circle_B.r, params['Ql'], params['sigma_x'])
 
-    if debug:
-        plot_s21(s21_final, axes = axes)
-        axes[2].add_patch(Circle((xc, yc), radius = r, fill = False))
-        plt.tight_layout()
-        plt.show()
-
-    f = s21.index.values
+    # combine all the parameters into one model to return
     notch = 1 - params['Ql']/np.abs(params['|Qc|'])*np.exp(-1j*phi) / \
                 (1 + 2j*params['Ql']*(f/params['fr'] - 1))
 
     fit = params['a'] * np.exp(1j*np.deg2rad(params['alpha'])) * \
             np.exp(-2*np.pi*1j*params['tau']*f) * notch
 
+    # plot the intermediate results if in debug mode
+    if debug:
+        # line delay removed and f_inf point estimated
+        axes = plot_s21(s21_circular)
+        circle_A.add_to(axes[2])
+        fm, fp = s21_circular.iloc[0], s21_circular.iloc[-1]
+        axes[2].scatter(np.real(z), np.imag(z), color = 'k', marker = 's')
+        axes[2].scatter(np.real(fm), np.imag(fm), color = 'k', marker = 'v')
+        axes[2].scatter(np.real(fp), np.imag(fp), color = 'k', marker = '^')
+        axes[0].set_ylabel('line delay removed')
+        plt.tight_layout()
+        plt.show()
+
+        # resonance after normalisation
+        axes = plot_s21(s21_norm)
+        circle_B.add_to(axes[2])
+        axes[0].set_ylabel('normalised')
+        plt.tight_layout()
+        plt.show()
+
+        # resonance after Ql polishing
+        axes = plot_s21(s21_norm)
+        plot_s21(pd.Series(notch, index = f), axes = axes)
+        circle_B.add_to(axes[2])
+        axes[0].set_ylabel('polished')
+        axes[2].scatter(np.real(sfr), np.imag(sfr), color = 'r')
+        plt.tight_layout()
+        plt.show()
+
     return params, pd.Series(fit, index = f)
-
-def polish_Ql(s21):
-    fr = np.abs(s21).idxmin()
-    _, _, r, _ = circle_fit(s21)
-
-    def costf(q):
-        fit = 1 - 2*r/(1 + 2j*q*(s21.index.values/fr - 1))
-        return np.linalg.norm(fit - s21)
-
-    Ql_rough = np.abs(s21).idxmin()/fwhm(s21)
-    result = shgo(costf, bounds = [(.1*Ql_rough, 10*Ql_rough)], iters = 5)
-
-    fit = 1 - 2*r/(1 + 2j*result.x*(s21.index.values/fr - 1))
-    return result, pd.Series(fit, index = s21.index)
 
 # for uncertainty calculations
 def _sigma_Qc(x, Ql, sigma_x):
     r = 1/(1/x - 1)
+    if r < 0:
+        return np.nan
+
     if np.log10(r) < -2 or np.log10(r) > 2:
         warnings.warn('Likely underestimated std on Qc for r = %.2f' % r)
+
     return Ql * sigma_x / x**2
 
 def _mu_Qc(x, Ql):
@@ -102,6 +109,10 @@ def _mu_Qi(x, Ql):
 
 def _sigma_Qi(x, Ql, sigma_x):
     r = 1/(1/x - 1)
+    if r < 0:
+        return np.nan
+
     if np.log10(r) < -2 or np.log10(r) > 2:
         warnings.warn('Likely underestimated std on Qi for r = %.2f' % r)
+
     return _mu_Qi(x, Ql)**2 / _mu_Qc(x, Ql)**2 * _sigma_Qc(x, Ql, sigma_x)
