@@ -7,24 +7,27 @@ from scipy.linalg import eig
 from scipy.optimize import minimize, shgo
 
 def circle_fit(s21_complex):
-    x, y = np.real(s21_complex), np.imag(s21_complex)
+    # increases the abs values of the complex data so that the moments don't
+    # look small compared to n = x.size
+    norm = np.ptp(np.abs(s21_complex.values))
+    x, y = np.real(s21_complex)/norm, np.imag(s21_complex)/norm
     z = x**2 + y**2
 
     Mx, My, Mz = x.sum(), y.sum(), z.sum()
     M = np.array(
         [
-            [z@z, x@z,  y@z,  Mz      ],
-            [z@x, x@x,  y@x,  Mx      ],
-            [z@y, x@y,  y@y,  My      ],
-            [Mz,  Mx,   My,   x.size  ]
+            [z@z, x@z, y@z, Mz    ],
+            [z@x, x@x, y@x, Mx    ],
+            [z@y, x@y, y@y, My    ],
+            [Mz,  Mx,  My,  x.size]
         ])
 
     P = np.array(
         [
-            [ 0,  0,  0, -2],
-            [ 0,  1,  0,  0],
-            [ 0,  0,  1,  0],
-            [-2,  0,  0,  0]
+            [4*Mz,   2*Mx,   2*My,  0],
+            [2*Mx, x.size,      0,  0],
+            [2*My,      0, x.size,  0],
+            [   0,      0,      0,  0]
         ])
 
     # find eigenvector associated with smallest non-negative eigenvalue
@@ -32,7 +35,8 @@ def circle_fit(s21_complex):
     A, B, C, D = vects[:,np.abs(vals).argmin()] # works better than > 0 min ???
     xc, yc, r = -B/(2*A), -C/(2*A), np.sqrt(B**2 + C**2 - 4*A*D)/(2*np.abs(A))
 
-    # prefer the solution with the smallest radius
+    xc, yc = -norm * B/(2*A), -norm * C/(2*A)
+    r = norm * np.sqrt(B**2 + C**2 - 4*A*D)/(2*np.abs(A))
     err = np.sum(np.abs(np.abs(s21_complex - (xc + 1j*yc)) - r))
 
     # normalisation of eigenvector is handled by sqrt. other factors are cancelled
