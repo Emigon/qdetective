@@ -4,7 +4,35 @@ import numpy as np
 import pandas as pd
 
 from scipy.linalg import eig
-from scipy.optimize import minimize, shgo
+from scipy.optimize import shgo
+
+import matplotlib.patches as patches
+
+class Circle(object):
+    def __init__(self, z, r):
+        self.z = z
+        self.r = r
+
+    @property
+    def x(self):
+        return np.real(self.z)
+
+    @property
+    def y(self):
+        return np.imag(self.z)
+
+    def rotate(self, theta):
+        self.z *= np.exp(1j*theta)
+        return self
+
+    def scale(self, scaling_factor):
+        self.z *= scaling_factor
+        self.r *= np.abs(scaling_factor)
+        return self
+
+    def add_to(self, axes):
+        axes.add_patch(patches.Circle((self.x, self.y), radius = self.r, fill = False))
+        axes.scatter(self.x, self.y, marker = '.', color = 'k')
 
 def circle_fit(s21_complex):
     # increases the abs values of the complex data so that the moments don't
@@ -40,7 +68,7 @@ def circle_fit(s21_complex):
     err = np.sum(np.abs(np.abs(s21_complex - (xc + 1j*yc)) - r))
 
     # normalisation of eigenvector is handled by sqrt. other factors are cancelled
-    return xc, yc, r, err
+    return Circle(xc + 1j*yc, r), err
 
 def fwhm(s21):
     mod = np.abs(s21)
@@ -57,17 +85,20 @@ def fit_line_delay(s21, max_line_length = 25):
         return circle_fit(np.exp(1j*tau*2*np.pi*s21.index.values)*s21)[-1]
     optresult = shgo(costf, bounds = [(0,max_line_length/3e8)], n = 200, iters = 5,
                      sampling_method = 'sobol')
-    return optresult, np.exp(1j*optresult.x*2*np.pi*s21.index.values)*s21
+    circular_s21 = np.exp(1j*optresult.x*2*np.pi*s21.index.values)*s21
+    return optresult, circular_s21, circle_fit(circular_s21)[0]
 
-def normalise(s21):
+def normalise(s21, circle):
     if np.ptp(s21.index) < 5*fwhm(s21):
         warnings.warn('Frequency span < 10*fwhm. Normalisation likely to be erroneous!')
 
-    xc, yc, r, err = circle_fit(s21)
-    w = xc + 1j*yc
-    theta = (np.angle(s21.iloc[-1] - w) - np.angle(s21.iloc[0] - w))/2
-    z = w + (s21.iloc[0] - w)*np.exp(1j*theta)
-    return z, s21 / z
+    theta = ((np.angle(s21.iloc[-1] - circle.z) - \
+                np.angle(s21.iloc[0] - circle.z))/2 % np.pi)
+
+    z = circle.z + (s21.iloc[0] - circle.z)*np.exp(1j*theta)
+    # adjust the point so that it sits on the fitted circle
+    z = circle.z + circle.r*(z - circle.z)/np.abs(z - circle.z)
+    return z, s21 / z, circle.scale(1/z)
 
 def draw_samples(s21, N):
     """ Samples s21 N times without replacement using gaussian with std = fwhm """
@@ -76,4 +107,3 @@ def draw_samples(s21, N):
 
     samples = np.random.choice(s21.index, size = N, p = probs, replace = False)
     return s21[samples].sort_index()
-
