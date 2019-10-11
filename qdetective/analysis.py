@@ -60,8 +60,8 @@ def circle_fit(s21_complex):
 
     # find eigenvector associated with smallest non-negative eigenvalue
     vals, vects = eig(M, b = P)
-    A, B, C, D = vects[:,np.abs(vals).argmin()] # works better than > 0 min ???
-    xc, yc, r = -B/(2*A), -C/(2*A), np.sqrt(B**2 + C**2 - 4*A*D)/(2*np.abs(A))
+    idxs, = np.where(vals > 0)
+    A, B, C, D = vects[:,idxs][:,vals[idxs].argmin()]
 
     xc, yc = -norm * B/(2*A), -norm * C/(2*A)
     r = norm * np.sqrt(B**2 + C**2 - 4*A*D)/(2*np.abs(A))
