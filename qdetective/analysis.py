@@ -66,8 +66,8 @@ def normalise(s21):
     return z, s21 / z
 
 def draw_samples(s21, N):
-    """ Samples s21 N times without replacement using gaussian with std = 2*fwhm """
-    probs = np.exp(-.5*(s21.index - np.abs(s21).idxmin())**2/((2*fwhm(s21))**2))
+    """ Samples s21 N times without replacement using gaussian with std = fwhm """
+    probs = np.exp(-.5*(s21.index - np.abs(s21).idxmin())**2/(fwhm(s21)**2))
     probs /= np.sum(probs)
 
     samples = np.random.choice(s21.index, size = N, p = probs, replace = False)
