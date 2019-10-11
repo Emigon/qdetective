@@ -85,7 +85,7 @@ def fit_line_delay(s21, max_line_length = 25):
 
 def normalise(s21, circle):
     if np.ptp(s21.index) < 5*fwhm(s21):
-        warnings.warn('Frequency span < 10*fwhm. Normalisation likely to be erroneous!')
+        warnings.warn('Frequency span < 5*fwhm. Normalisation likely to be erroneous!')
 
     theta = ((np.angle(s21.iloc[-1] - circle.z) - \
                 np.angle(s21.iloc[0] - circle.z))/2 % np.pi)
