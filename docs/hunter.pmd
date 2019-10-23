@@ -1,0 +1,257 @@
+% Resonance Hunting
+% Daniel Parker
+% 14th October 2019
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from qdetective import *
+from qdetective.models import *
+
+np.random.seed(42)
+```
+
+# The Problem
+When measuring resonant microwave circuits, we often have a rough idea where the
+resonance(s) are in frequency from design intention and simulation data. However,
+we don't know exactly where they are within this range and they can be hard to
+spot if quality factors are high.
+
+A broad frequency sweep with a VNA (or frequency sampling in simulation) may
+not have the resolution to capture all the desired resonances. Given approximate
+knowledge of the widest range of frequencies and widest possible range of quality
+factors, we can define a signal processing algorithm that hunts for resonances
+given a function that permits sampling of a device over a fixed number of points.
+
+Let's codify an example containing 5 resonances between $7GHz$ and $8GHz$. Suppose
+we have simulated this device and know that the resoannces should be between
+$6GHz$ and $9GHz$ and the range of qualitiy factors is $10^2$ up to $10^6$.
+
+```python f_size = (8, 3), width = 900
+# some linearly spaced resonances
+def all_resonances(f):
+    return ideal_notch(f, 7.0e9, Qi = 5e2, Qc = 5e2) + \
+           ideal_notch(f, 7.2e9, Qi = 5e3, Qc = 5e3) + \
+           ideal_notch(f, 7.4e9, Qi = 5e4, Qc = 5e4) + \
+           ideal_notch(f, 7.6e9, Qi = 5e5, Qc = 5e5) + \
+           ideal_notch(f, 7.8e9, Qi = 1e3, Qc = 1e3)
+
+# we need 1 million points to resolve the sharpest resonance over the full sweep
+# range
+
+f = np.linspace(6.0e9, 9.0e9, 1000000)
+plt.plot(10*np.log10(np.abs(all_resonances(f))))
+plt.tight_layout()
+plt.show()
+
+# in practice we have some kind of baseline response and environment noise
+def baseline(f):
+    return 10**(3/10) * np.cos(5/3e9 * f) + 10**(0/10) * np.sin(20/3e9 * f)
+
+def full_response(f):
+    return np.abs(all_resonances(f)) + \
+           baseline(f) + \
+           np.abs(measurement_noise(f, power_dBm = 24))
+
+plt.plot(10*np.log10(full_response(f)))
+plt.tight_layout()
+plt.show()
+```
+
+In the presence of baseline and noise it becomes harder to see the resonances.
+But with 1 million points we can still see them. Let's reduce this down to 1000,
+a generous number of samples to collect on a VNA in a reasonable time frame:
+
+```python f_size = (8, 3), width = 900
+f = np.linspace(6e9, 9e9, 1000)
+plt.plot(10*np.log10(full_response(f)))
+plt.tight_layout()
+plt.show()
+```
+
+We've lost three of the resonances.
+
+We define a function called a `sampler`, which accepts start and stop
+frequencies, and samples `N` points. This function will be replaced with a VNA
+acquisition method in practice.
+
+```python
+def sampler(f_start, f_stop, N = 1000):
+    f = np.linspace(f_start, f_stop, N)
+    return full_response(f)
+```
+
+# Rough Baseline Removal
+Suppose that we know the lower limit of quality factor we expect to see:
+
+```python
+Qmin = 1e2
+```
+
+Then we may use a Savitsky-Golay filter, parameterised by the minimum Q, to
+remove much of the baseline:
+
+```python f_size = (8, 3), width = 900
+from scipy.signal import savgol_filter, find_peaks
+
+window_size = int(2*Qmin) # the number of points to fit the spline over
+                          # make sure its bigger than the minimum Q
+if not(window_size % 2):
+    window_size += 1
+
+plt.plot(savgol_filter(sampler(6e9, 9e9), window_size, 3))
+plt.tight_layout()
+plt.show()
+
+def estimate_baseline(sparam, Qmin):
+    window_size = int(2*Qmin) # the number of points to fit the spline over
+                              # make sure its bigger than the minimum Q
+    if not(window_size % 2):
+        window_size += 1
+
+    filtered = savgol_filter(sampler(6e9, 9e9), window_size, 3)
+    baseline = lambda f: np.interp(f, sparam.index.values, filtered)
+    return baseline
+
+response = sampler(6e9, 9e9)
+baseline_est = estimate_baseline(response, Qmin)
+
+plt.plot(response - baseline_est(response.index))
+plt.tight_layout()
+plt.show()
+
+def sampler2(f_start, f_stop, N = 1000):
+    pts = np.linspace(f_start, f_stop, N)
+    return sampler(f_start, f_stop, N = N) - baseline_est(pts)
+```
+
+# High Resolution Scan
+Now we can perform a high resolution scan of the baseline removed resonance. The
+sampling interval is determined by the highest possible Q factor that the user
+expects. Suppose that we want a minimum of $k$ points surround the highest possible
+Q factor resonance:
+
+$$ Q_{max} = \frac{f_c}{\delta f} = \frac{f_c}{k\cdot(f_{+} - f_{-})/N}$$
+$$ \Rightarrow \Delta f = f_{+} - f_{-} = \frac{N f_c}{kQ_{max}}$$
+
+```python f_size = (8, 3), width = 900
+def high_res_sampler(sampler, fmin, fmax, N, Qmax = 1e6, k = 10):
+    # the smallest interval required to get k samples over a resonance
+    delta_f = N*fmin/(k*Qmax)
+    N_total = (fmax - fmin)/delta_f
+    N_intervals = round(N_total/N + 0.5)
+
+    high_res = pd.Series()
+
+    f_start = fmin
+    for i in range(N_intervals):
+        f_stop = np.min([f_start + delta_f*N, fmax])
+        samples = sampler(f_start, f_stop)
+        high_res = pd.concat([high_res, samples], sort = True)
+
+        if f_stop == fmax:
+            break
+
+        f_start = f_stop + delta_f
+    return high_res
+
+high_res = high_res_sampler(sampler2, 6.0e9, 9.0e9, 1000)
+
+plt.plot(high_res)
+plt.tight_layout()
+plt.show()
+```
+
+# Peak Finding
+```python f_size = (8, 3), width = 900
+def locate_resonances(high_res, fmin, fmax, N, Qmin = 1e2, Qmax = 1e6, k = 10):
+    delta_f = N*fmin/(k*Qmax)
+    widest = int(fmax/Qmin / delta_f)
+    narrowest = int(fmin/Qmax / delta_f)
+
+    peaks, properties = find_peaks(-high_res,\
+                                   prominence = 6*np.std(high_res),\
+                                   distance = widest,\
+                                   width = (narrowest, widest))
+
+    peak_info = pd.DataFrame(properties, index = high_res.iloc[peaks].index)
+    peak_info['widths'] *= delta_f
+    return peaks, peak_info
+
+peaks, peak_info = locate_resonances(high_res, 6.0e9, 9.0e9, 1000)
+
+plt.plot(high_res)
+plt.plot(high_res.iloc[peaks], 'x')
+plt.tight_layout()
+plt.show()
+```
+
+**Need to apply fine resolution scaning here**
+
+```python
+resonances = []
+for fc in peak_info.index:
+    # use the find_peaks fwhm estimate to zoom in on each resonance
+    fwhm = peak_info.loc[fc,'widths']
+    test = sampler2(fc - 2.5*fwhm, fc + 2.5*fwhm)
+
+    # refine the fwhm estimate with these new high resolution traces
+    halfmax = .5*(np.max(test) - high_res.loc[fc])
+    region, = np.where(test < high_res.loc[fc] + halfmax)
+    fwhm = np.ptp(test.iloc[region].index)
+
+    resonances.append(sampler(fc - 2.5*fwhm, fc + 2.5*fwhm))
+
+for res in resonances:
+    plt.plot(res)
+    plt.tight_layout()
+    plt.show()
+```
+
+# The Complete Algorithm
+```python
+def hunt(sampler, fmin, fmax, N, Qmin = 1e2, Qmax = 1e6, debug = False):
+    baseline_est = estimate_baseline(sampler(fmin, fmax), Qmin)
+
+    def cleaned_sampler(f_start, f_stop, N = 1000):
+        pts = np.linspace(f_start, f_stop, N)
+        return sampler(f_start, f_stop, N = N) - baseline_est(pts)
+
+    tr = high_res_sampler(cleaned_sampler, fmin, fmax, N, Qmax = Qmax)
+
+    peaks, peak_info = \
+        locate_resonances(tr, 6.0e9, 9.0e9, 1000, Qmin = Qmin, Qmax = Qmax)
+
+    if debug:
+        fig, (ax1, ax2) = plt.subplots(nrows = 2)
+        ax1.plot(sampler(fmin, fmax))
+        ax2.plot(tr)
+        ax2.plot(tr.iloc[peaks], 'x')
+        fig.tight_layout()
+        plt.show()
+
+    resonances = []
+    for fc in peak_info.index:
+        # use the find_peaks fwhm estimate to zoom in on each resonance
+        fwhm = peak_info.loc[fc,'widths']
+        test = cleaned_sampler(fc - 2.5*fwhm, fc + 2.5*fwhm)
+
+        # refine the fwhm estimate with these new high resolution traces
+        halfmax = .5*(np.max(test) - tr.loc[fc])
+        region, = np.where(test < tr.loc[fc] + halfmax)
+        fwhm = np.ptp(test.iloc[region].index)
+
+        # set to 5*fwhm for circle fitting
+        resonances.append(sampler(fc - 2.5*fwhm, fc + 2.5*fwhm))
+
+    return resonances
+
+import qdetective
+
+for res in qdetective.hunt(sampler, 6.0e9, 9.0e9, 1000, debug = True):
+    plt.plot(res)
+    plt.tight_layout()
+    plt.show()
+```
