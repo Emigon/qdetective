@@ -4,9 +4,10 @@ import pandas as pd
 
 from scipy.signal import savgol_filter, find_peaks
 
-def estimate_baseline(sparam, Qmin):
-    window_size = int(2*Qmin) # the number of points to fit the spline over
-                              # make sure its bigger than the minimum Q
+def estimate_baseline(sparam, Qmin, fmax):
+    widest = int(fmax/Qmin / (sparam.index[1] - sparam.index[0]))
+    window_size = 2*widest
+
     if not(window_size % 2):
         window_size += 1
 
@@ -49,7 +50,7 @@ def locate_resonances(high_res, fmin, fmax, N, Qmin = 1e2, Qmax = 1e6, k = 10):
     return peaks, peak_info
 
 def hunt(sampler, fmin, fmax, N, Qmin = 1e2, Qmax = 1e6, debug = False):
-    baseline_est = estimate_baseline(sampler(fmin, fmax, N = N), Qmin)
+    baseline_est = estimate_baseline(sampler(fmin, fmax, N = N), Qmin, fmax)
 
     def cleaned_sampler(f_start, f_stop, N = 1000):
         pts = np.linspace(f_start, f_stop, N)
