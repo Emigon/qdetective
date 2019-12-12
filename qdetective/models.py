@@ -1,16 +1,44 @@
-import pandas as pd
+""" models.py
+
+author: daniel parker
+
+a collection of parametric models for modelling resonators and testing fits
+"""
+
 import numpy as np
 
-def environment(f, a = 1, alpha = 0, tau = 0):
-    return pd.Series(a*np.exp(1j*alpha)*np.exp(-2*np.pi*1j*f*tau), index = f)
+from sympy import *
+from dsptypes import Parametric1D
 
-def measurement_noise(f, power_dBm = -np.inf):
-    voltage = np.sqrt(50 * 10**(power_dBm - 30)) # assumes a 50 ohm load
-    complex_noise = np.random.normal(scale = 6*voltage, size = f.size) + \
-                    1j*np.random.normal(scale = 6*voltage, size = f.size)
-    return pd.Series(complex_noise, index = f)
+def line_delay(b_tau = (0, 50, 100)):
+    """ returns a Parametric1D model for the line delay
 
-def ideal_notch(f, fr, Qi = 1000, Qc = 1000, phi = 0):
-    Ql = 1/(1/Qi + 1/(Qc*np.cos(np.deg2rad(phi))))
-    s21 = 1 - Ql/Qc * np.exp(1j*np.deg2rad(phi))/(1 + 2j*Ql*(f/fr - 1))
-    return pd.Series(s21, index = f)
+    Params:
+        tau:    The line delay
+
+    Args:   Parameter bounds as required by Parametric1D
+    """
+    tau, f = symbols('tau f')
+    return Parametric1D(exp(-2j*np.pi*tau*f), {'tau': b_tau})
+
+def ideal_notch(b_Qi = (2, 4, 6),
+                b_Qc = (2, 4, 6),
+                b_phi = (-45, 0, 45),
+                b_fr = (1e9, 5e9, 11e9)):
+    """ returns a Parametric1D model for an ideal notch resonator
+
+    Params:
+        Qi:     The log10 of the internal quality factor
+        Qc:     The log10 of the modulus of the complex coupling quality factor
+        phi:    The argument of the complex coupling quality factor
+        fr:     The resonance frequency
+
+    Args:   Parameter bounds as required by Parametric1D
+    """
+    Ql, Qi, Qc, phi, fr, f = symbols('Ql Qi Qc phi fr f')
+    s21 = 1 - Ql/(10**Qc) * exp(1j * (np.pi/180) * phi)/(1 + 2j*Ql*(f/fr - 1))
+    expr = s21.subs(Ql, 1/(1/(10**Qi) + 1/((10**Qc)*cos((np.pi/180) * phi))))
+
+    params = {'Qi': b_Qi, 'Qc': b_Qc, 'phi': b_phi, 'fr': b_fr}
+
+    return Parametric1D(expr, params)
